@@ -10,20 +10,77 @@ env:
   IMAGE: vuln-app
 
 jobs:
-  build-push:
+  build-scan:
     runs-on: [self-hosted, ci-sec]
+    timeout-minutes: 60
     steps:
       - name: Récupérer le code
         uses: actions/checkout@v4
 
-      - name: Build de l'image
+      - name: Préparer le dossier des rapports
         run: |
-          docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest ./app
+          rm -rf reports
+          mkdir -p reports
+          chmod 777 reports
+
+      # ---------- BUILD + PUSH ----------
+      - name: Build de l'image
+        run: docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest ./app
 
       - name: Push sur le registre
         run: |
           docker push $REGISTRY/$IMAGE:${{ github.sha }}
           docker push $REGISTRY/$IMAGE:latest
 
-      - name: Vérifier le registre
-        run: curl -s -m 5 http://localhost:5000/v2/$IMAGE/tags/list
+      # ---------- SCANNERS ----------
+      - name: Trivy (image Docker)
+        run: |
+          trivy image --scanners vuln --format json --output reports/trivy.json \
+            --exit-code 0 $REGISTRY/$IMAGE:${{ github.sha }}
+
+      - name: Semgrep (code)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep \
+            semgrep scan --config p/python --json --output reports/semgrep.json app
+
+      - name: gitleaks (secrets)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            dir /repo/app --report-format json --report-path /repo/reports/gitleaks.json --exit-code 0
+
+      - name: Dependency-Check (librairies)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          docker run --rm -v "$PWD:/src" -v dc-data:/usr/share/dependency-check/data \
+            owasp/dependency-check:latest \
+            --scan /src/app --project vuln-app --enableExperimental \
+            --format JSON --out /src/reports --nvdApiKey "$NVD_API_KEY"
+          mv reports/dependency-check-report.json reports/dependency-check.json
+
+      - name: SonarQube (qualité + sécurité)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          docker run --rm --network host -v "$PWD:/usr/src" \
+            -e SONAR_HOST_URL=http://localhost:9000 -e SONAR_TOKEN="$SONAR_TOKEN" \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.projectKey=devsecops-ai -Dsonar.sources=app \
+            -Dsonar.python.version=3.8 -Dsonar.qualitygate.wait=true || true
+          curl -s -u "$SONAR_TOKEN:" \
+            "http://localhost:9000/api/issues/search?componentKeys=devsecops-ai&ps=500" \
+            -o reports/sonarqube.json
+
+      # ---------- RÉSULTATS ----------
+      - name: Résumé
+        run: ls -lh reports/
+
+      - name: Sauvegarder les rapports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapports-securite
+          path: reports/
+
+      - name: Remettre les droits sur les fichiers
+        if: always()
+        run: docker run --rm -v "$PWD:/w" alpine chown -R $(id -u):$(id -g) /w
