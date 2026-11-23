@@ -1,0 +1,16 @@
+name: Test runner PC-2
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  hello:
+    runs-on: [self-hosted, ci-sec]
+    steps:
+      - name: Qui suis-je ?
+        run: |
+          echo "Bonjour depuis $(hostname)"
+          whoami
+          docker --version
+          curl -s http://localhost:5000/v2/_catalog
