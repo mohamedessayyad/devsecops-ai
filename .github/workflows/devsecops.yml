@@ -10,7 +10,7 @@ env:
   IMAGE: vuln-app
 
 jobs:
-  build-scan:
+  build-scan-deploy:
     runs-on: [self-hosted, ci-sec]
     timeout-minutes: 60
     steps:
@@ -71,15 +71,48 @@ jobs:
             "http://localhost:9000/api/issues/search?componentKeys=devsecops-ai&ps=500" \
             -o reports/sonarqube.json
 
-      # ---------- RÉSULTATS ----------
-      - name: Résumé
+      - name: Résumé des scans
         run: ls -lh reports/
 
+      # ---------- IA ----------
+      - name: Analyse par l'IA (PC-1)
+        run: |
+          curl -sf -m 300 -X POST http://ai-node:8000/analyze \
+            -F trivy=@reports/trivy.json \
+            -F semgrep=@reports/semgrep.json \
+            -F dependency_check=@reports/dependency-check.json \
+            -F sonarqube=@reports/sonarqube.json \
+            -F gitleaks=@reports/gitleaks.json \
+            -o reports/ai-report.json
+          jq -r '.report' reports/ai-report.json
+
       - name: Sauvegarder les rapports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rapports-securite
           path: reports/
+
+      # ---------- QUALITY GATE ----------
+      - name: Quality gate
+        run: |
+          CRIT=$(jq '.critical' reports/ai-report.json)
+          echo "Failles critiques : $CRIT"
+          if [ "$CRIT" -gt 0 ]; then
+            echo "❌ Déploiement bloqué"
+            exit 1
+          fi
+          echo "✅ OK pour déployer"
+
+      # ---------- DÉPLOIEMENT ----------
+      - name: Déployer sur k8s
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > $RUNNER_TEMP/kubeconfig
+          export KUBECONFIG=$RUNNER_TEMP/kubeconfig
+          sed "s|IMAGE_TAG|${{ github.sha }}|" k8s/deployment.yaml | kubectl apply -f -
+          kubectl rollout status deployment/vuln-app --timeout=120s
 
       - name: Remettre les droits sur les fichiers
         if: always()
