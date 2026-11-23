@@ -1,0 +1,29 @@
+name: DevSecOps pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: localhost:5000
+  IMAGE: vuln-app
+
+jobs:
+  build-push:
+    runs-on: [self-hosted, ci-sec]
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Build de l'image
+        run: |
+          docker build -t $REGISTRY/$IMAGE:${{ github.sha }} -t $REGISTRY/$IMAGE:latest ./app
+
+      - name: Push sur le registre
+        run: |
+          docker push $REGISTRY/$IMAGE:${{ github.sha }}
+          docker push $REGISTRY/$IMAGE:latest
+
+      - name: Vérifier le registre
+        run: curl -s -m 5 http://localhost:5000/v2/$IMAGE/tags/list
