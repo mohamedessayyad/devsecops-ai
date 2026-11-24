@@ -3,7 +3,7 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# Fausse clé AWS laissée exprès pour que gitleaks la détecte
+#gitleaks clé!!!
 AWS_ACCESS_KEY_ID = "AKIAZ3MSJV4WWNKWW5FG"
 
 
